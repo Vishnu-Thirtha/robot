@@ -31,11 +31,6 @@ The system cleanly separates **geometric path generation** from **time parameter
    \]  
    is generated using cubic splines, where \( s \) approximates arc length.
 
-3. **Time Parameterization**  
-   The same geometric path can be traversed using:
-   - Constant velocity profiles
-   - Trapezoidal (constant acceleration) profiles
-
 ---
 
 ## Demonstrations
