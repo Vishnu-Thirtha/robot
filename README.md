@@ -36,5 +36,5 @@ The robot motion is **explicitly triggered by the user** (via a terminal key pre
 
 ### Path Following Demonstration
 
-<video src="assets/demo.mp4" controls width="720"></video>
+![Pure Pursuit Path Following](assets/demo.gif)
 
