@@ -3,9 +3,14 @@
 import rclpy
 from rclpy.node import Node
 import numpy as np
+import threading
+import sys
+import termios
+import tty
 
 from nav_msgs.msg import Path, Odometry
 from geometry_msgs.msg import Twist
+from visualization_msgs.msg import Marker
 from tf_transformations import euler_from_quaternion
 
 
@@ -14,90 +19,101 @@ class PathController(Node):
     def __init__(self):
         super().__init__('path_controller')
 
+        # --------------------
         # Subscribers
+        # --------------------
         self.path_sub = self.create_subscription(
-            Path,
-            '/planned_path',
-            self.path_callback,
-            10
-        )
+            Path, '/planned_path', self.path_callback, 10)
 
         self.odom_sub = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.odom_callback,
-            10
-        )
+            Odometry, '/odom', self.odom_callback, 10)
 
-        # Publisher
-        self.cmd_pub = self.create_publisher(
-            Twist,
-            '/cmd_vel',
-            10
-        )
+        # --------------------
+        # Publishers
+        # --------------------
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.lookahead_marker_pub = self.create_publisher(
+            Marker, '/lookahead_point_marker', 10)
 
-        # Control loop (50 Hz)
-        self.timer = self.create_timer(0.02, self.control_loop)
+        # --------------------
+        # Timer
+        # --------------------
+        self.timer = self.create_timer(0.02, self.control_loop)  # 50 Hz
 
-        # Internal state
+        # --------------------
+        # State
+        # --------------------
         self.path_xy = None
         self.path_s = None
-        self.path_t = None
-        self.start_time = None
 
         self.robot_pose = None
         self.robot_yaw = None
 
-        # Controller parameters
-        self.lookahead_dist = 0.2
-        self.v_max = 0.1
-        self.a_max = 0.1
+        self.started = False  # <-- KEYBOARD CONTROL
 
-        self.get_logger().info('Path Controller started')
+        # --------------------
+        # Parameters
+        # --------------------
+        self.lookahead_dist = 0.4
+        self.v = 0.3
 
-    # -----------------------------
-    # PATH CALLBACK
-    # -----------------------------
+        # Keyboard thread
+        self.keyboard_thread = threading.Thread(
+            target=self.keyboard_listener, daemon=True)
+        self.keyboard_thread.start()
+
+        self.get_logger().info('Path Controller ready')
+        self.get_logger().info('Press "w" to start, "s" to stop')
+
+    # =====================================================
+    # Keyboard input
+    # =====================================================
+    def keyboard_listener(self):
+        settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+
+        try:
+            while True:
+                key = sys.stdin.read(1)
+                if key == 'w':
+                    self.started = True
+                    self.get_logger().info('Robot STARTED')
+                elif key == 's':
+                    self.started = False
+                    self.stop_robot()
+                    self.get_logger().info('Robot STOPPED')
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+
+    # =====================================================
+    # Callbacks
+    # =====================================================
     def path_callback(self, msg):
         self.path_xy = np.array([
-            (p.pose.position.x, p.pose.position.y)
+            [p.pose.position.x, p.pose.position.y]
             for p in msg.poses
         ])
-
         self.path_s = self.compute_arc_length(self.path_xy)
-        self.path_t = self.trapezoidal_time_parameterization(
-            self.path_s,
-            self.v_max,
-            self.a_max
-        )
+        self.get_logger().info('New path received')
 
-        self.start_time = self.get_clock().now()
-        self.get_logger().info('New path received and time-parameterized')
-
-    # -----------------------------
-    # ODOM CALLBACK
-    # -----------------------------
     def odom_callback(self, msg):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
 
         q = msg.pose.pose.orientation
-        yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
+        self.robot_yaw = euler_from_quaternion(
+            [q.x, q.y, q.z, q.w])[2]
 
         self.robot_pose = np.array([x, y])
-        self.robot_yaw = yaw
 
-    # -----------------------------
-    # CONTROL LOOP
-    # -----------------------------
+    # =====================================================
+    # Control Loop
+    # =====================================================
     def control_loop(self):
-        if self.path_xy is None or self.robot_pose is None:
+        if not self.started:
             return
 
-        elapsed = (self.get_clock().now() - self.start_time).nanoseconds * 1e-9
-
-        if elapsed >= self.path_t[-1]:
-            self.stop_robot()
+        if self.path_xy is None or self.robot_pose is None:
             return
 
         target = self.get_lookahead_point()
@@ -106,19 +122,24 @@ class PathController(Node):
             return
 
         v, omega = self.pure_pursuit_control(target)
+        self.publish_lookahead_marker(target)
         self.publish_cmd(v, omega)
 
-    # -----------------------------
-    # PURE PURSUIT
-    # -----------------------------
+    # =====================================================
+    # Pure Pursuit Logic
+    # =====================================================
     def get_lookahead_point(self):
         distances = np.linalg.norm(self.path_xy - self.robot_pose, axis=1)
-        candidates = np.where(distances >= self.lookahead_dist)[0]
+        closest_idx = np.argmin(distances)
 
-        if len(candidates) == 0:
+        s_current = self.path_s[closest_idx]
+        s_target = s_current + self.lookahead_dist
+
+        if s_target >= self.path_s[-1]:
             return None
 
-        return self.path_xy[candidates[0]]
+        target_idx = np.searchsorted(self.path_s, s_target)
+        return self.path_xy[target_idx]
 
     def pure_pursuit_control(self, target):
         dx = target[0] - self.robot_pose[0]
@@ -130,40 +151,18 @@ class PathController(Node):
 
         curvature = 2.0 * y_r / (self.lookahead_dist ** 2)
 
-        v = self.v_max
-        omega = v * curvature
+        omega = self.v * curvature
+        return self.v, omega
 
-        return v, omega
-
-    # -----------------------------
-    # TIME PARAMETERIZATION
-    # -----------------------------
+    # =====================================================
+    # Utilities
+    # =====================================================
     def compute_arc_length(self, path):
         s = [0.0]
         for i in range(1, len(path)):
             s.append(s[-1] + np.linalg.norm(path[i] - path[i - 1]))
         return np.array(s)
 
-    def trapezoidal_time_parameterization(self, s, v_max, a_max):
-        total_length = s[-1]
-
-        t_acc = v_max / a_max
-        d_acc = 0.5 * a_max * t_acc ** 2
-
-        if 2 * d_acc > total_length:
-            t_acc = np.sqrt(total_length / a_max)
-            t_total = 2 * t_acc
-        else:
-            d_cruise = total_length - 2 * d_acc
-            t_cruise = d_cruise / v_max
-            t_total = 2 * t_acc + t_cruise
-
-        t = np.linspace(0.0, t_total, len(s))
-        return t
-
-    # -----------------------------
-    # COMMAND PUBLISHING
-    # -----------------------------
     def publish_cmd(self, v, omega):
         cmd = Twist()
         cmd.linear.x = float(v)
@@ -171,8 +170,24 @@ class PathController(Node):
         self.cmd_pub.publish(cmd)
 
     def stop_robot(self):
-        cmd = Twist()
-        self.cmd_pub.publish(cmd)
+        self.cmd_pub.publish(Twist())
+
+    def publish_lookahead_marker(self, point):
+        marker = Marker()
+        marker.header.frame_id = 'odom'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'lookahead'
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(point[0])
+        marker.pose.position.y = float(point[1])
+        marker.pose.position.z = 0.15
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.1
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+
+        self.lookahead_marker_pub.publish(marker)
 
 
 def main():
