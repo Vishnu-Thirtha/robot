@@ -11,6 +11,7 @@ import tty
 from nav_msgs.msg import Path, Odometry
 from geometry_msgs.msg import Twist
 from visualization_msgs.msg import Marker
+from std_msgs.msg import Bool
 from tf_transformations import euler_from_quaternion
 
 
@@ -19,51 +20,75 @@ class PathController(Node):
     def __init__(self):
         super().__init__('path_controller')
 
-        # --------------------
+        # ----------------------------------
+        # Mode selection
+        # ----------------------------------
+        self.declare_parameter('standalone', True)
+        self.standalone = self.get_parameter('standalone').value
+        self.control_source = 'KEYBOARD' if self.standalone else 'GUI'
+
+        self.started = False  # motion enable flag
+
+        mode = 'STANDALONE (keyboard)' if self.standalone else 'GUI-controlled (PyQt)'
+        self.get_logger().info('=' * 50)
+        self.get_logger().info(f'Path Controller started in {mode} mode')
+        self.get_logger().info('=' * 50)
+
+        # ----------------------------------
         # Subscribers
-        # --------------------
+        # ----------------------------------
         self.path_sub = self.create_subscription(
             Path, '/planned_path', self.path_callback, 10)
 
         self.odom_sub = self.create_subscription(
             Odometry, '/odom', self.odom_callback, 10)
 
-        # --------------------
+        if not self.standalone:
+            self.param_sub = self.create_subscription(
+                Twist, '/controller_params', self.param_callback, 10)
+
+            self.enable_sub = self.create_subscription(
+                Bool, '/controller_enable', self.enable_callback, 10)
+
+        # ----------------------------------
         # Publishers
-        # --------------------
+        # ----------------------------------
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.lookahead_marker_pub = self.create_publisher(
             Marker, '/lookahead_point_marker', 10)
 
-        # --------------------
+        # ----------------------------------
         # Timer
-        # --------------------
-        self.timer = self.create_timer(0.02, self.control_loop)  # 50 Hz
+        # ----------------------------------
+        self.timer = self.create_timer(0.02, self.control_loop)
 
-        # --------------------
+        # ----------------------------------
         # State
-        # --------------------
+        # ----------------------------------
         self.path_xy = None
         self.path_s = None
-
         self.robot_pose = None
         self.robot_yaw = None
 
-        self.started = False  # <-- KEYBOARD CONTROL
-
-        # --------------------
-        # Parameters
-        # --------------------
+        # ----------------------------------
+        # Controller parameters
+        # ----------------------------------
         self.lookahead_dist = 0.4
         self.v = 0.3
 
-        # Keyboard thread
-        self.keyboard_thread = threading.Thread(
-            target=self.keyboard_listener, daemon=True)
-        self.keyboard_thread.start()
+        # ----------------------------------
+        # Keyboard control
+        # ----------------------------------
+        if self.standalone and sys.stdin.isatty():
+            self.keyboard_thread = threading.Thread(
+                target=self.keyboard_listener, daemon=True)
+            self.keyboard_thread.start()
+        else:
+            if self.standalone:
+                self.get_logger().warn(
+                    'Standalone mode requested but no TTY available. Keyboard disabled.')
 
         self.get_logger().info('Path Controller ready')
-        self.get_logger().info('Press "w" to start, "s" to stop')
 
     # =====================================================
     # Keyboard input
@@ -77,11 +102,11 @@ class PathController(Node):
                 key = sys.stdin.read(1)
                 if key == 'w':
                     self.started = True
-                    self.get_logger().info('Robot STARTED')
+                    self.get_logger().info('[KEYBOARD] START command received')
                 elif key == 's':
                     self.started = False
                     self.stop_robot()
-                    self.get_logger().info('Robot STOPPED')
+                    self.get_logger().info('[KEYBOARD] STOP command received')
         finally:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
@@ -97,14 +122,30 @@ class PathController(Node):
         self.get_logger().info('New path received')
 
     def odom_callback(self, msg):
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-
+        pos = msg.pose.pose.position
         q = msg.pose.pose.orientation
+
+        self.robot_pose = np.array([pos.x, pos.y])
         self.robot_yaw = euler_from_quaternion(
             [q.x, q.y, q.z, q.w])[2]
 
-        self.robot_pose = np.array([x, y])
+    def param_callback(self, msg):
+        self.v = msg.linear.x
+        self.lookahead_dist = msg.angular.z
+
+        self.get_logger().info(
+            f'[GUI] Params updated → v={self.v:.2f} m/s, '
+            f'lookahead={self.lookahead_dist:.2f} m'
+        )
+
+    def enable_callback(self, msg):
+        self.started = msg.data
+
+        if self.started:
+            self.get_logger().info('[GUI] START command received')
+        else:
+            self.get_logger().info('[GUI] STOP command received')
+            self.stop_robot()
 
     # =====================================================
     # Control Loop
@@ -126,7 +167,7 @@ class PathController(Node):
         self.publish_cmd(v, omega)
 
     # =====================================================
-    # Pure Pursuit Logic
+    # Pure Pursuit
     # =====================================================
     def get_lookahead_point(self):
         distances = np.linalg.norm(self.path_xy - self.robot_pose, axis=1)
@@ -145,13 +186,12 @@ class PathController(Node):
         dx = target[0] - self.robot_pose[0]
         dy = target[1] - self.robot_pose[1]
 
-        # Transform to robot frame
         x_r = np.cos(-self.robot_yaw) * dx - np.sin(-self.robot_yaw) * dy
         y_r = np.sin(-self.robot_yaw) * dx + np.cos(-self.robot_yaw) * dy
 
         curvature = 2.0 * y_r / (self.lookahead_dist ** 2)
-
         omega = self.v * curvature
+
         return self.v, omega
 
     # =====================================================
