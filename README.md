@@ -36,6 +36,5 @@ The robot motion is **explicitly triggered by the user** (via a terminal key pre
 
 ### Path Following Demonstration
 
-🎥 *Video: Robot following a spline path using Pure Pursuit*  
-*(Insert demo video or GIF here)*
+<video src="assets/demo.mp4" controls width="720"></video>
 
