@@ -44,7 +44,7 @@ The system cleanly separates **geometric path generation** from **time parameter
 
 Waypoints are selected on a loaded map, and the planner generates a smooth, map-aligned path.
 
-📹 **Video Demo:** *(add link here)*
+![Path Planning](assets/path_planning_demo.gif)
 
 ---
 
