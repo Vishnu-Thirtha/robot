@@ -1,49 +1,44 @@
-# Path Planning Module
+# Controller Module
 
 ## Overview
 
-This branch implements an **interactive path planning system** for a mobile robot in **ROS 2 Humble**.  
-Users incrementally select waypoints, and the planner generates a smooth path that can be traversed using either **constant velocity** or **constant (trapezoidal) acceleration** motion profiles.
+This module implements a **Pure Pursuit path-following controller** for a mobile robot in **ROS 2 Humble**.  
+Once a smooth spline path is generated from user-selected waypoints, the controller tracks the path using a geometric lookahead-based strategy.
 
-The system cleanly separates **geometric path generation** from **time parameterization**, enabling flexible motion execution and controller integration.
-
----
-
-## Key Features
-
-- Interactive waypoint selection via **RViz**
-- Smooth cubic spline–based path generation
-- Continuous position, velocity, and acceleration (C² continuity)
-- Visualization in **RViz** and **Gazebo**
-- Supports mapped and unmapped environments
+The robot motion is **explicitly triggered by the user** (via a terminal key press), allowing the lookahead point and path geometry to be inspected in RViz **before execution**.
 
 ---
 
-## Path Planning Approach
+## Controller Description
 
-1. **Waypoint Selection**  
-   Waypoints are appended interactively (e.g., using RViz’s *Publish Point* tool).
+- **Path input**: `nav_msgs/Path` generated from spline interpolation  
+- **Control method**: Pure Pursuit (curvature-based tracking)  
+- **Lookahead point**:
+  - Selected along the path using **arc-length parameterization**
+  - Ensures smooth, forward-only tracking
+- **Motion profile**:
+  - Supports constant velocity
+  - Extendable to trapezoidal (constant acceleration) profiles
 
-2. **Geometric Path Generation**  
-   A parametric path  
-   \[
-   p(s) = [x(s), y(s)]
-   \]  
-   is generated using cubic splines, where \( s \) approximates arc length.
-
-3. **Time Parameterization**  
-   The same geometric path can be traversed using:
-   - Constant velocity profiles
-   - Trapezoidal (constant acceleration) profiles
 
 ---
 
-## Demonstrations
+## User Interaction
 
-### 1. Path Generation with Map Present
+- Waypoints can be selected incrementally (e.g., via RViz)
+- Robot motion starts only after pressing:
+  - **`w`** → start following the path  
+  - **`s`** → stop the robot  
 
-Waypoints are selected on a loaded map, and the planner generates a smooth, map-aligned path.
+---
 
+## Demo
+
+### Path Following Demonstration
+
+![Pure Pursuit Path Following](assets/demo.gif)
+
+<<<<<<< HEAD
 ![Path Planning](assets/path_planning_demo.gif)
 
 ---
@@ -82,3 +77,5 @@ Path generation in the presence of obstacles, demonstrating obstacle-aware plann
   - Controller integration (Pure Pursuit, MPC, etc.)
 
 ---
+=======
+>>>>>>> controller
